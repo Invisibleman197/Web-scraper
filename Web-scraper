@@ -1,0 +1,121 @@
+import sys
+import csv
+import requests
+from bs4 import BeautifulSoup
+
+"""
+projekt_třetí.py: třetí projekt
+author: Brychta Lukáš
+email: lukas.brychta@email.cz
+"""
+
+# --- 1. NASIMULOVÁNÍ ARGUMENTŮ PRO GOOGLE COLAB ---
+# Tady jsme vybrali okres Cheb, přesně podle tvých podkladů.
+fake_url = "https://volby.cz/pls/ps2017nss/ps32?xjazyk=CZ&xkraj=5&xnumnuts=4101"
+fake_output = "cheb_volby17.csv"
+
+sys.argv = ["projekt_3.py", fake_url, fake_output]
+
+# --- 2. SAMOTNÝ KÓD SCRAPERU ---
+
+def over_argumenty():
+    if len(sys.argv) != 3:
+        print("Chyba: Nebyl zadán správný počet argumentů!")
+        sys.exit(1)
+    return sys.argv[1], sys.argv[2]
+
+def ziskej_polivku(url):
+    try:
+        odpoved = requests.get(url)
+        odpoved.raise_for_status()
+        return BeautifulSoup(odpoved.text, 'html.parser')
+    except requests.RequestException as e:
+        print(f"Chyba při stahování: {e}")
+        sys.exit(1)
+
+def parsuj_hlavni_prehled(hlavni_url):
+    soup = ziskej_polivku(hlavni_url)
+    obce = []
+    tabulky = soup.find_all("table", {"class": "table"})
+    
+    for tabulka in tabulky:
+        radky = tabulka.find_all("tr")
+        for radek in radky:
+            kod_td = radek.find("td", {"class": "cislo"})
+            if kod_td and kod_td.text.strip() != "-":
+                kod = kod_td.text.strip()
+                odkaz_tag = kod_td.find("a")
+                if odkaz_tag:
+                    href = odkaz_tag.get("href")
+                    detail_url = f"https://volby.cz/pls/ps2017nss/{href}"
+                    
+                    nazev_td = radek.find("td", {"class": "overflow_name"})
+                    if not nazev_td:
+                        tds = radek.find_all("td")
+                        nazev = tds[1].text.strip() if len(tds) > 1 else ""
+                    else:
+                        nazev = nazev_td.text.strip()
+                        
+                    obce.append({"code": kod, "location": nazev, "url": detail_url})
+    return obce
+
+def vyscrapuj_obec(obec_url):
+    soup = ziskej_polivku(obec_url)
+    volici = soup.find("td", {"headers": "sa2"}).text.replace("\xa0", "").strip()
+    obalky = soup.find("td", {"headers": "sa3"}).text.replace("\xa0", "").strip()
+    platne = soup.find("td", {"headers": "sa6"}).text.replace("\xa0", "").strip()
+    
+    data_obce = {"registered": int(volici), "envelopes": int(obalky), "valid": int(platne)}
+    strany_hlasy = {}
+    
+    for i in (1, 2):
+        tabulka_stran = soup.find("div", {"id": f"t{i}sa1"})
+        if tabulka_stran:
+            radky = tabulka_stran.find_all("tr")
+            for radek in radky:
+                nazev_td = radek.find("td", {"class": "overflow_name"})
+                hlasy_td = radek.find("td", {"class": "cislo"}, headers=lambda h: h and "sa2" in h)
+                
+                if nazev_td and hlasy_td:
+                    nazev_strany = nazev_td.text.strip()
+                    pocet_hlasu = hlasy_td.text.replace("\xa0", "").strip()
+                    strany_hlasy[nazev_strany] = int(pocet_hlasu) if pocet_hlasu and pocet_hlasu != "-" else 0
+                        
+    return data_obce, strany_hlasy
+
+# --- 3. SPUŠTĚNÍ CELÉHO PROCESU ---
+hlavni_url, vystupni_soubor = over_argumenty()
+print(f"ZÍSKÁVÁM DATA Z URL: {hlavni_url}")
+seznam_obci = parsuj_hlavni_prehled(hlavni_url)
+
+vsechna_data = []
+vsechny_strany = []
+
+# Pro ukázku v Colabu projedeme jen prvních 5 obcí, ať nečekáš věčnost
+for obec in seznam_obci[:5]:
+    print(f"ZÍSKÁVÁM DATA Z URL: {obec['url']}")
+    data_obce, strany_hlasy = vyscrapuj_obec(obec["url"])
+    
+    radek_data = {"code": obec["code"], "location": obec["location"], **data_obce, **strany_hlasy}
+    vsechna_data.append(radek_data)
+    
+    for strana in strany_hlasy.keys():
+        if strana not in vsechny_strany:
+            vsechny_strany.append(strana)
+
+hlavicka = ["code", "location", "registered", "envelopes", "valid"] + vsechny_strany
+print(f"UKLÁDÁM DATA DO SOUBORU: {vystupni_soubor}")
+
+print(f"UKLÁDÁM DATA DO SOUBORU: {vystupni_soubor}")
+    
+# Zápis do CSV souboru upravený pro český Excel
+with open(vystupni_soubor, mode="w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=hlavicka, delimiter=";")
+        writer.writeheader()
+        for radek in vsechna_data:
+            for strana in vsechny_strany:
+                if strana not in radek:
+                    radek[strana] = 0
+            writer.writerow(radek)
+                
+print(f"DOKONČUJI: projekt_3.py")
